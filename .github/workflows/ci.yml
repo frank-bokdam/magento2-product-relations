@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  MAGENTO_VERSION: '2.4.7-p4'
+  PHP_VERSION: '8.3'
+
+jobs:
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, intl, bcmath
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-quality-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-quality-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: PHP CodeSniffer
+        run: vendor/bin/phpcs --standard=Magento2 --extensions=php src/
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --configuration=phpstan.neon --no-progress
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-unit-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-unit-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Run unit tests
+        run: vendor/bin/phpunit --testsuite=Unit --no-coverage
+
+  integration-tests:
+    name: Integration Tests & DI Compile
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: magento_test
+          MYSQL_USER: magento
+          MYSQL_PASSWORD: magento
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+        ports:
+          - 3306:3306
+
+      opensearch:
+        image: opensearchproject/opensearch:2.12.0
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: 'true'
+          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        options: >-
+          --health-cmd="curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\|\"status\":\"yellow\"'"
+          --health-interval=10s
+          --health-timeout=10s
+          --health-retries=10
+        ports:
+          - 9200:9200
+
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@v4
+        with:
+          path: module
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: bcmath, ctype, curl, dom, gd, hash, iconv, intl, mbstring, openssl, pdo_mysql, simplexml, soap, xsl, zip, sockets
+          coverage: none
+
+      - name: Configure Magento Marketplace auth
+        run: |
+          composer global config http-basic.repo.magento.com \
+            ${{ secrets.MAGENTO_PUBLIC_KEY }} \
+            ${{ secrets.MAGENTO_PRIVATE_KEY }}
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-magento-${{ env.MAGENTO_VERSION }}-${{ hashFiles('module/composer.lock') }}
+          restore-keys: composer-magento-${{ env.MAGENTO_VERSION }}-
+
+      - name: Install Magento
+        run: |
+          composer create-project \
+            --repository-url=https://repo.magento.com/ \
+            "magento/project-community-edition=$MAGENTO_VERSION" \
+            magento \
+            --no-install \
+            --no-interaction
+          cd magento
+          MODULE_NAME=$(python3 -c "import json; print(json.load(open('../module/composer.json'))['name'])")
+          composer config repositories.local path ../module
+          composer require "${MODULE_NAME}:@dev" --no-update
+          composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Setup Magento
+        run: |
+          cd magento
+          php bin/magento setup:install \
+            --db-host=127.0.0.1 \
+            --db-name=magento_test \
+            --db-user=magento \
+            --db-password=magento \
+            --backend-frontname=admin \
+            --admin-email=admin@example.com \
+            --admin-firstname=Admin \
+            --admin-lastname=User \
+            --admin-user=admin \
+            --admin-password='Admin@123!' \
+            --language=en_US \
+            --currency=USD \
+            --timezone=UTC \
+            --use-rewrites=1 \
+            --search-engine=opensearch \
+            --opensearch-host=127.0.0.1 \
+            --opensearch-port=9200
+
+      - name: DI Compile
+        run: cd magento && php bin/magento setup:di:compile
+
+      - name: Configure integration test DB
+        run: |
+          mysql -h 127.0.0.1 -u root -proot \
+            -e "CREATE DATABASE IF NOT EXISTS magento_integration_tests;"
+          cd magento
+          cp dev/tests/integration/etc/install-config-mysql.php.dist \
+             dev/tests/integration/etc/install-config-mysql.php
+          sed -i \
+            "s|'db-host' => 'localhost'|'db-host' => '127.0.0.1'|g; \
+             s|'db-name' => 'magento_integration_tests'|'db-name' => 'magento_integration_tests'|g; \
+             s|'db-user' => 'root'|'db-user' => 'magento'|g; \
+             s|'db-password' => ''|'db-password' => 'magento'|g; \
+             s|'search-engine' => 'elasticsearch7'|'search-engine' => 'opensearch'|g; \
+             s|'elasticsearch-host' => 'localhost'|'opensearch-host' => '127.0.0.1'|g; \
+             s|'elasticsearch-port' => 9200|'opensearch-port' => 9200|g" \
+            dev/tests/integration/etc/install-config-mysql.php
+
+      - name: Run integration tests
+        run: |
+          cd magento
+          VENDOR_PATH=$(python3 -c "import json; print(json.load(open('../module/composer.json'))['name'])")
+          vendor/bin/phpunit \
+            -c dev/tests/integration/phpunit.xml \
+            --no-coverage \
+            "vendor/${VENDOR_PATH}/src/Test/Integration/"
