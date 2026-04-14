@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Setup/Declaration/Schema/etc/schema.xsd">
+
+    <table name="product_relation_events" resource="default" engine="innodb"
+           comment="Product Relation Raw Session Events">
+        <column xsi:type="int" name="id" unsigned="true" nullable="false" identity="true" comment="ID"/>
+        <column xsi:type="varchar" name="relation_type" nullable="false" length="64" comment="Relation Type Code"/>
+        <column xsi:type="int" name="product_id_a" unsigned="true" nullable="false" comment="Product ID A (lower)"/>
+        <column xsi:type="int" name="product_id_b" unsigned="true" nullable="false" comment="Product ID B (higher)"/>
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false" comment="Store ID"/>
+        <column xsi:type="varchar" name="session_id" nullable="false" length="128" comment="Session ID"/>
+        <column xsi:type="timestamp" name="created_at" on_update="false" nullable="false"
+                default="CURRENT_TIMESTAMP" comment="Created At"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="PRODUCT_RELATION_EVENTS_PAIR_SESSION_UNIQUE">
+            <column name="relation_type"/>
+            <column name="product_id_a"/>
+            <column name="product_id_b"/>
+            <column name="store_id"/>
+            <column name="session_id"/>
+        </constraint>
+        <index referenceId="PRODUCT_RELATION_EVENTS_CREATED_AT" indexType="btree">
+            <column name="created_at"/>
+        </index>
+        <index referenceId="PRODUCT_RELATION_EVENTS_RELATION_TYPE" indexType="btree">
+            <column name="relation_type"/>
+        </index>
+    </table>
+
+    <table name="product_relation_counts" resource="default" engine="innodb"
+           comment="Product Relation Aggregated Daily Counts">
+        <column xsi:type="int" name="id" unsigned="true" nullable="false" identity="true" comment="ID"/>
+        <column xsi:type="varchar" name="relation_type" nullable="false" length="64" comment="Relation Type Code"/>
+        <column xsi:type="int" name="product_id_a" unsigned="true" nullable="false" comment="Product ID A (lower)"/>
+        <column xsi:type="int" name="product_id_b" unsigned="true" nullable="false" comment="Product ID B (higher)"/>
+        <column xsi:type="smallint" name="store_id" unsigned="true" nullable="false" comment="Store ID"/>
+        <column xsi:type="date" name="period_date" nullable="false" comment="Period (daily bucket)"/>
+        <column xsi:type="int" name="count" unsigned="true" nullable="false" default="0" comment="Count"/>
+        <constraint xsi:type="primary" referenceId="PRIMARY">
+            <column name="id"/>
+        </constraint>
+        <constraint xsi:type="unique" referenceId="PRODUCT_RELATION_COUNTS_PAIR_DATE_UNIQUE">
+            <column name="relation_type"/>
+            <column name="product_id_a"/>
+            <column name="product_id_b"/>
+            <column name="store_id"/>
+            <column name="period_date"/>
+        </constraint>
+        <index referenceId="PRODUCT_RELATION_COUNTS_RELATION_TYPE_DATE" indexType="btree">
+            <column name="relation_type"/>
+            <column name="period_date"/>
+        </index>
+    </table>
+
+</schema>
